@@ -10,11 +10,11 @@ import uuid
 import json
 import re
 
-from articlemeta.client import ThriftClient
+# from articlemeta.client import ThriftClient
 from articlemeta.client import UnauthorizedAccess
-from articlemeta.client import ServerError
+# from articlemeta.client import ServerError
 
-from controller import DataBroker, IsisDataBroker
+from controller import DataBroker, IsisDataBroker, OpacDataBroker, OpacServerError
 
 logger = logging.getLogger(__name__)
 
@@ -220,15 +220,14 @@ def load_isis_records(collection, issns=None):
             yield (rec_coll, record)
 
 
-def load_articlemeta_issues_ids(collection, issns=None):
-    rc = ThriftClient(domain=ARTICLEMETA_THRIFTSERVER, admintoken=ADMINTOKEN)
-
+def load_opac_issues_ids(collection, issns=None):
+    opac_db = OpacDataBroker()
     issues_pids = []
-    logger.info('Loading articlemeta issues ids')
+    logger.info('Loading opac issues ids')
     for issn in issns or [None]:
-        for issue in rc.issues(collection, issn=issn, only_identifiers=True):
+        for issue in opac_db.issues(collection, issn=issn):
             logger.debug(
-                'Loading articlemeta issue id (%s)',
+                'Loading opac issue id (%s)',
                 '_'.join([issue.collection, issue.code, issue.processing_date.replace('-', '')])
             )
             issues_pids.append('_'.join([issue.collection, issue.code, issue.processing_date.replace('-', '')]))
@@ -236,15 +235,14 @@ def load_articlemeta_issues_ids(collection, issns=None):
     return issues_pids
 
 
-def load_articlemeta_documents_ids(collection, issns=None):
-    rc = ThriftClient(domain=ARTICLEMETA_THRIFTSERVER, admintoken=ADMINTOKEN)
-
+def load_opac_documents_ids(collection, issns=None):
+    opac_db = OpacDataBroker()
     documents_pids = []
-    logger.info('Loading articlemeta documents ids')
+    logger.info('Loading opac documents ids')
     for issn in issns or [None]:
-        for document in rc.documents(collection, issn=issn, only_identifiers=True):
+        for document in opac_db.documents(collection, issn=issn):
             logger.debug(
-                'Loading articlemeta document id (%s)',
+                'Loading opac document id (%s)',
                 '_'.join([document.collection, document.code, document.processing_date.replace('-', '')])
             )
             documents_pids.append('_'.join([document.collection, document.code, document.processing_date.replace('-', '')]))
@@ -252,15 +250,14 @@ def load_articlemeta_documents_ids(collection, issns=None):
     return documents_pids
 
 
-def load_articlemeta_journals_ids(collection, issns=None):
-    rc = ThriftClient(domain=ARTICLEMETA_THRIFTSERVER, admintoken=ADMINTOKEN)
-
+def load_opac_journals_ids(collection, issns=None):
+    opac_db = OpacDataBroker()
     journals_pids = []
-    logger.info('Loading articlemeta journals ids')
+    logger.info('Loading opac journals ids')
     for issn in issns or [None]:
-        for journal in rc.journals(collection, issn=issn, only_identifiers=True):
+        for journal in opac_db.journals(collection, issn=issn):
             logger.debug(
-                'Loading articlemeta journal id (%s)',
+                'Loading opac journal id (%s)',
                 '_'.join([journal.collection, journal.code])
             )
             journals_pids.append('_'.join([journal.collection, journal.code, journal.processing_date.replace('-', '')]))
@@ -270,24 +267,24 @@ def load_articlemeta_journals_ids(collection, issns=None):
 
 def run(collection, issns, full_rebuild=False, force_delete=False, bulk_size=BULK_SIZE):
 
-    rc = ThriftClient(domain=ARTICLEMETA_THRIFTSERVER, admintoken=ADMINTOKEN)
+    opac_db = OpacDataBroker()
 
     logger.info('Running Isis2mongo')
-    logger.debug('Thrift Server: %s', ARTICLEMETA_THRIFTSERVER)
-    logger.debug('Admin Token: %s', ADMINTOKEN)
+    # logger.debug('Thrift Server: %s', ARTICLEMETA_THRIFTSERVER)
+    # logger.debug('Admin Token: %s', ADMINTOKEN)
     logger.info('Loading ArticleMeta identifiers for collection: %s', collection)
-
-    articlemeta_documents = set(
-        load_articlemeta_documents_ids(collection, issns))
-    articlemeta_issues = set(
-        load_articlemeta_issues_ids(collection, issns))
-    articlemeta_journals = set(
-        load_articlemeta_journals_ids(collection, issns))
 
     if full_rebuild is True:
         articlemeta_documents = set([])
         articlemeta_issues = set([])
         articlemeta_journals = set([])
+    else:
+        articlemeta_documents = set(
+            load_opac_documents_ids(collection, issns))
+        articlemeta_issues = set(
+            load_opac_issues_ids(collection, issns))
+        articlemeta_journals = set(
+            load_opac_journals_ids(collection, issns))
 
     with DataBroker(uuid.uuid4()) as ctrl:
         update_issue_id = ''
@@ -370,7 +367,7 @@ def run(collection, issns, full_rebuild=False, force_delete=False, bulk_size=BUL
                     '_'.join([item[0], item[1]])
                 )
             try:
-                rc.delete_document(item[1], item[0])
+                opac_db.delete_document(item[1], item[0])
                 logger.debug(
                     'Document (%d, %d) removed from Articlemeta (%s)',
                     ndx,
@@ -404,8 +401,8 @@ def run(collection, issns, full_rebuild=False, force_delete=False, bulk_size=BUL
                 continue
 
             try:
-                rc.add_document(json.dumps(document_meta))
-            except ServerError:
+                opac_db.add_document(document_meta)
+            except OpacServerError:
                 logger.error(
                     'Fail to load document into Articlemeta (%s)',
                     '_'.join([item[0], item[1]])
@@ -444,7 +441,7 @@ def run(collection, issns, full_rebuild=False, force_delete=False, bulk_size=BUL
                     '_'.join([item[0], item[1]])
                 )
             try:
-                rc.delete_journal(item[1], item[0])
+                opac_db.delete_journal(item[1], item[0])
                 logger.debug(
                     'Journal (%d, %d) removed from Articlemeta (%s)',
                     ndx,
@@ -477,8 +474,8 @@ def run(collection, issns, full_rebuild=False, force_delete=False, bulk_size=BUL
                 continue
 
             try:
-                rc.add_journal(json.dumps(journal_meta))
-            except ServerError:
+                opac_db.add_journal(journal_meta)
+            except OpacServerError:
                 logger.error(
                     'Fail to load journal into Articlemeta (%s)',
                     '_'.join([item[0], item[1]])
@@ -518,7 +515,7 @@ def run(collection, issns, full_rebuild=False, force_delete=False, bulk_size=BUL
                     '_'.join([item[0], item[1]])
                 )
             try:
-                rc.delete_issue(item[1], item[0])
+                opac_db.delete_issue(item[1], item[0])
                 logger.debug(
                     'Issue (%d, %d) removed from Articlemeta (%s)',
                     ndx,
@@ -553,8 +550,8 @@ def run(collection, issns, full_rebuild=False, force_delete=False, bulk_size=BUL
                 continue
 
             try:
-                rc.add_issue(json.dumps(issue_meta))
-            except ServerError:
+                opac_db.add_issue(issue_meta)
+            except OpacServerError:
                 logger.error(
                     'Fail to load issue into Articlemeta (%s)',
                     '_'.join([item[0], item[1]])

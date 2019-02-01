@@ -1,3 +1,4 @@
+# coding: utf-8
 import logging
 import pymongo
 import os
@@ -8,8 +9,13 @@ from pymongo import errors
 from pymongo.operations import UpdateOne
 
 from isis2json import isis2json
+from xylose.scielodocument import Article, Journal, Issue
 
 logger = logging.getLogger(__name__)
+
+
+class OpacServerError(Exception):
+    pass
 
 
 class IsisDataBroker(object):
@@ -25,6 +31,183 @@ class IsisDataBroker(object):
 
         for item in isis2json.iterIsoRecords(self.database, 3):
             yield item
+
+
+class OpacDataBroker(object):
+    def __init__(self):
+        self.database_name = os.environ.get('MONGODB_OPAC_PROC_DB_NAME', "opac_proc")
+        self.mongoconn = None
+        self.mongocl = None
+
+    @property
+    def mongoclient(self):
+        if not self.mongocl:
+            self.mongocl = MongoClient(
+                os.environ.get('MONGODB_OPAC_PROC_URI', "mongodb://0.0.0.0"),
+                os.environ.get('MONGODB_OPAC_PROC_PORT', 27027))
+        return self.mongocl
+
+    @property
+    def mongodb(self):
+        if not self.mongoconn:
+            self.mongoconn = self.mongoclient[self.database_name]
+        return self.mongoconn
+
+    def _exists(self, db_collection, code, scielo_collection):
+        fltr = {'code': code}
+
+        if scielo_collection:
+            fltr['collection'] = scielo_collection
+
+        if self.mongodb[db_collection].find(fltr).count() >= 1:
+            return True
+
+    def _get_identifiers(self, db_collection, scielo_collection, projection_field):
+        query_filter = {'collection_acronym': scielo_collection, }
+        projection = {
+            'collection_acronym': 1,
+            'processing_date': 1,
+            projection_field: 1,
+        }
+        # import pdb; pdb.set_trace()
+        identifiers = self.mongodb[db_collection].find(query_filter, projection)
+        return [identifier for identifier in identifiers]
+
+    def documents(self, scielo_collection, issn=None):
+        return self._get_identifiers(
+            'identifiers_article',
+            scielo_collection,
+            'article_pid')
+
+    def issues(self, scielo_collection, issn=None):
+        return self._get_identifiers(
+            'identifiers_issue',
+            scielo_collection,
+            'issue_pid')
+
+    def journals(self, scielo_collection, issn=None):
+        return self._get_identifiers(
+            'identifiers_journal',
+            scielo_collection,
+            'journal_issn')
+
+    def add_document(self, document):
+        logger.debug('Adding document to opac')
+        db_collection = 'am_article'
+        _collection = ""
+        if 'v992' in self.data['article']:
+            if isinstance(self.data['article']['v992'], list):
+                _collection = self.data['article']['v992'][0]['_']
+            else:
+                _collection self.data['article']['v992']
+
+        if 'v992' in self.data['title']:
+            if isinstance(self.data['title']['v992'], list):
+                _collection = self.data['title']['v992'][0]['_']
+            else:
+                _collection = self.data['title']['v992']
+        
+        article_meta = {
+            'code': document['article']['v880'][0]['_'],
+            'collection': _collection,
+            'metadata': document,
+        }
+        if self._exists(
+                db_collection, article_meta['code'], article_meta['collection']):
+            article_meta['updated_at'] = datetime.now()
+        else:
+            try:
+                article_meta['created_at'] = datetime.strptime(
+                    document['article']['processing_date'], '%Y-%m-%d')
+            except:
+                article_meta['created_at'] = datetime.now()
+
+        try:
+            self.mongodb[db_collection].update_one(
+                {
+                    'code': article.publisher_id,
+                    'collection': article.collection_acronym
+                },
+                {'$set': article_meta},
+                upsert=True
+            )
+        except Exception as exc:
+            logger.error(str(exc))
+            raise OpacServerError
+
+    def add_issue(self, issue):
+        logger.debug('Adding issue to opac')
+        db_collection = 'am_issue'
+
+        if self._exists(
+                db_collection, issue.publisher_id, issue.collection_acronym):
+            issue_meta['updated_at'] = datetime.now()
+        else:
+            if not isinstance(issue.data['article']['processing_date'], datetime):
+                try:
+                    issue_meta['created_at'] = datetime.strptime(
+                        issue.data['article']['processing_date'], '%Y-%m-%d')
+                except:
+                    issue_meta['created_at'] = datetime.now()
+
+        try:
+            self.mongodb[db_collection].update_one(
+                {'code': issue['code'], 'collection': issue['collection']},
+                {'$set': issue},
+                upsert=True
+            )
+        except Exception as exc:
+            logger.error(str(exc))
+            raise OpacServerError
+
+    def add_journal(self, journal):
+        logger.debug('Adding journal to opac')
+        db_collection = 'am_journal'
+        _collection = ""
+        if 'v992' in journal:
+            if isinstance(journal['v992'], list):
+                _collection = journal['v992'][0]['_']
+            else:
+                _collection = journal['v992']
+        _code = journal.get('v400', [{'_': None}])[0]['_']
+        journal_meta = {
+            'code': _code,
+            'collection': _collection,
+            'metadata': journal,
+        }
+        # TODO: Adaptar para salvar
+
+        if self._exists(
+                db_collection, journal.publisher_id, journal.collection_acronym):
+            journal_meta['updated_at'] = datetime.now()
+        else:
+            if not isinstance(journal.data['article']['processing_date'], datetime):
+                try:
+                    journal_meta['created_at'] = datetime.strptime(
+                        journal.data['article']['processing_date'], '%Y-%m-%d')
+                except:
+                    journal_meta['created_at'] = datetime.now()
+
+        try:
+            self.mongodb[db_collection].update_one(
+                {'code': journal['code'], 'collection': journal['collection']},
+                {'$set': journal},
+                upsert=True
+            )
+        except Exception as exc:
+            logger.error(str(exc))
+            raise OpacServerError
+
+    def delete_document(self, code, scielo_collection):
+        logger.debug('Deleting document from opac')
+
+    def delete_issue(self, code, scielo_collection):
+        logger.debug('Deleting issue from opac')
+
+    def delete_journal(self, code, scielo_collection):
+        logger.debug('Deleting journal from opac')
+    
+    # XXX: NÃO DELETAR DO DB!!
 
 
 class DataBroker(object):
